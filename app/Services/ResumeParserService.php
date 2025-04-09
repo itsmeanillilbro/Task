@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\ScoreRanking;
 use Smalot\PdfParser\Parser;
 
 class ResumeParserService
@@ -14,7 +15,7 @@ class ResumeParserService
         
         // Normalize text for better parsing
         $text = $this->normalizeText($text);
-        dd($text);
+     
         return [
             'name' => $this->extractName($text),
             'email' => $this->extractEmail($text),
@@ -25,39 +26,36 @@ class ResumeParserService
     }
 
     protected function normalizeText($text)
-    {
-        // Convert to single line breaks and remove excessive spaces
-        $text = preg_replace('/\s+/', ' ', $text);
-        return $text;
-    }
+{
+    // Convert all whitespace to single spaces
+    $text = preg_replace('/\s+/', ' ', $text);
+    
+    // Add newlines before section headers
+    $text = preg_replace('/(\n|^)(Education|Experience|Skills|Projects|Technical)/i', "\n\n$2", $text);
+    
+    // Standardize date formats
+    $text = preg_replace('/(\d{4})\s*-\s*(\d{4})/', '$1–$2', $text);
+    
+    // Remove common noise patterns
+    $text = preg_replace('/\b(?:Phone|Mobile|Email)\s*:.*?(?=\n|$)/i', '', $text);
+    
+    return trim($text);
+}
 
     protected function extractName($text)
     {
-        // Pattern 1: Look for "Name:" prefix
-        if (preg_match('/Name[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i', $text, $matches)) {
-            return trim($matches[1]);
-        }
-
-        // Pattern 2: First line after "RESUME" or "CURRICULUM VITAE"
-        if (preg_match('/(?:RESUME|CURRICULUM VITAE|CV)[\s:]*\n([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i', $text, $matches)) {
-            return trim($matches[1]);
-        }
-
-        // Pattern 3: First title-case line with 2-3 words
-        if (preg_match('/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})/', $text, $matches)) {
+        // Works fine for your case
+        if (preg_match('/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/', $text, $matches)) {
             $potentialName = trim($matches[1]);
-            // Basic validation to exclude obvious non-names
             if (!preg_match('/[0-9@#]/', $potentialName) && strlen($potentialName) < 30) {
                 return $potentialName;
             }
         }
-
         return 'Unknown Candidate';
     }
 
     protected function extractEmail($text)
     {
-        // Standard email pattern
         if (preg_match('/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/', $text, $matches)) {
             return trim($matches[0]);
         }
@@ -65,66 +63,114 @@ class ResumeParserService
     }
 
     protected function extractSkills($text)
-    {
-        // Common section headers for skills
-        $skillPatterns = [
-            '/Skills?\s*:?\s*([^E]+)(?:Experience|Education)/i',
-            '/Technical\s+Skills?\s*:?\s*([^E]+)(?:Experience|Education)/i',
-            '/Key\s+Skills?\s*:?\s*([^E]+)(?:Experience|Education)/i',
-        ];
-
-        $skills = [];
-        foreach ($skillPatterns as $pattern) {
-            if (preg_match($pattern, $text, $matches)) {
-                $skillText = $matches[1];
-                // Extract individual skills (comma/line separated)
-                if (preg_match_all('/([A-Za-z\+#][\w\+#\.\-]{2,})/', $skillText, $skillMatches)) {
-                    $skills = array_merge($skills, $skillMatches[1]);
-                }
-                break;
-            }
-        }
-
-        // Fallback: Look for common tech skills anywhere in text
-        if (empty($skills)) {
-            $techKeywords = ['Laravel', 'PHP', 'JavaScript', 'Python', 'SQL', 'React', 'Vue', 'AWS'];
-            foreach ($techKeywords as $keyword) {
-                if (preg_match("/\b{$keyword}\b/i", $text)) {
-                    $skills[] = $keyword;
-                }
-            }
-        }
-
-        return array_unique(array_map('trim', $skills));
+{
+    $skills = [];
+    
+    // Get all scoring keywords from database
+    $scoringKeywords = ScoreRanking::pluck('keyword')->toArray();
+    
+    // Strategy 1: Direct section extraction
+    if (preg_match('/Technical\s+Skills?\s*:?\s*([\s\S]+?)(?=(?:Projects|Experience|Education|$))/i', $text, $sectionMatch)) {
+        $skillText = $sectionMatch[1];
+        
+        // Clean up the text
+        $skillText = preg_replace('/\band\b/i', ',', $skillText);
+        $skillText = preg_replace('/\s+/', ' ', $skillText);
+        
+        // Extract skills with multiple patterns
+        preg_match_all('/
+            (?:^|\s|,)                  # Start or comma
+            ([A-Za-z\+#][\w\+#\.\-]{2,})  # Skill word
+            (?:\s*\/\s*[A-Za-z\+#][\w\+#\.\-]{2,})* # Optional slash-separated variants
+        /x', $skillText, $matches);
+        
+        $skills = array_map('trim', $matches[1]);
     }
-
-    protected function extractExperience($text)
-    {
-        // Look for experience section
-        if (preg_match('/Experience\s*:?\s*(.+?)(?:Education|Skills|Projects)/is', $text, $matches)) {
-            return trim($matches[1]);
-        }
-
-        // Fallback: Look for date ranges that typically indicate experience
-        if (preg_match('/((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}).*?(?:present|now|current)/is', $text, $matches)) {
-            return $matches[0];
-        }
-
-        return 'Experience not specified';
+    
+    // Strategy 2: Bullet point extraction
+    if (empty($skills) && preg_match_all('/•\s*([^\n]+)/', $text, $matches)) {
+        $skills = array_map('trim', $matches[1]);
     }
+    
+    // Strategy 3: Match against scoring keywords from database
+    foreach ($scoringKeywords as $keyword) {
+        if (preg_match("/\b" . preg_quote($keyword, '/') . "\b/i", $text) && 
+            !in_array($keyword, $skills)) {
+            $skills[] = $keyword;
+        }
+    }
+    
+    // Final cleanup
+    return array_values(array_unique(array_filter($skills, function($skill) {
+        return strlen($skill) > 2; // Filter out very short "skills"
+    })));
+}
+
+   protected function extractExperience($text)
+{
+    // Look for "Professional Experience" or "Work Experience" section
+    if (preg_match('/(?:Professional|Work)\s+Experience\s*:?\s*(.+?)(?=(?:Education|Skills|Projects|$))/is', $text, $matches)) {
+        return trim($matches[1]);
+    }
+    
+    // Fallback: Look for date ranges with company names
+    if (preg_match('/((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|[0-9]{4}).*?present.*?\b(?:pvt|ltd|inc|llc)\b.*?)/is', $text, $matches)) {
+        return trim($matches[1]);
+    }
+    
+    return 'Experience not specified';
+}
 
     protected function extractEducation($text)
     {
-        // Look for education section
-        if (preg_match('/Education\s*:?\s*(.+?)(?:Experience|Skills|Projects)/is', $text, $matches)) {
-            return trim($matches[1]);
+        // Pre-process to remove干扰因素
+        $text = preg_replace('/\b[\w\.-]+@[\w\.-]+\.\w+\b/', '', $text); // Remove emails
+        $text = preg_replace('/\b\d{10,}\b/', '', $text); // Remove phone numbers
+        
+        $educations = [];
+        
+        // Primary extraction from Education section
+        if (preg_match('/Education\s*:?\s*([\s\S]+?)(?=(?:Projects|Experience|Skills|Technical|$))/i', $text, $sectionMatch)) {
+            $eduText = $sectionMatch[1];
+            
+            // Handle multiple education entries
+            preg_match_all('/
+                (\d{4}\s*–\s*(?:\d{4}|Present))  # Date range
+                \s*                               # Separator
+                (.+?)                             # Location
+                \s*                               # Separator
+                ((?:BSc|B\.?S\.?|Bachelor|M\.?S\.?|Master|Ph\.?D\.?).*?) # Degree
+                \s*                               # Separator
+                (?:at\s*)?(.+?)                  # Institution
+                (?=\n\n|\n\w|\d{4}|$)            # Boundary
+            /ix', $eduText, $matches, PREG_SET_ORDER);
+            
+            foreach ($matches as $match) {
+                $educations[] = trim(implode(' ', [
+                    $match[1],  // Dates
+                    $match[3],  // Degree
+                    'at',
+                    $match[4]   // Institution
+                ]));
+            }
         }
-
-        // Look for degree patterns
-        if (preg_match('/((?:B\.?S\.?|B\.?A\.?|M\.?S\.?|M\.?A\.?|Ph\.?D\.?).*?(?:University|Institute|College))/i', $text, $matches)) {
-            return trim($matches[1]);
+        
+        // Fallback: Degree + Institution pattern
+        if (empty($educations)) {
+            preg_match_all('/
+                (BSc|B\.?S\.?|Bachelor|M\.?S\.?|Master|Ph\.?D\.?)  # Degree
+                \s+
+                (?:in\s)?(.+?)                     # Field of study
+                \s+
+                (?:from|at)\s(.+?)                # Institution
+                (?=\n|,|$)
+            /ix', $text, $matches, PREG_SET_ORDER);
+            
+            foreach ($matches as $match) {
+                $educations[] = trim("{$match[1]} in {$match[2]} from {$match[3]}");
+            }
         }
-
-        return 'Education not specified';
+        
+        return empty($educations) ? 'Education not specified' : implode("\n\n", $educations);
     }
 }
