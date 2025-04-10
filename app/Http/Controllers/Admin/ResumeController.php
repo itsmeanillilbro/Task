@@ -54,12 +54,10 @@ class ResumeController extends Controller
         ]);
 
         $jobs = [];
-        
+
         foreach ($request->file('resumes') as $file) {
-            // Store file first
             $filePath = $file->store('temp-resumes');
-            
-            // Create job with path instead of file object
+
             $jobs[] = new ProcessResume(
                 filePath: $filePath,
                 originalName: $file->getClientOriginalName()
@@ -68,11 +66,7 @@ class ResumeController extends Controller
 
         $batch = Bus::batch($jobs)
             ->then(function () {
-                // Optional: Clean up temp files after successful processing
                 Storage::deleteDirectory('temp-resumes');
-            })
-            ->catch(function ($batch, $e) {
-                \Log::error("Batch failed: " . $e->getMessage());
             })
             ->dispatch();
 
@@ -96,7 +90,7 @@ class ResumeController extends Controller
             "Content-Disposition" => "attachment; filename=candidates.csv",
         ];
 
-        $callback = function() use ($candidates) {
+        $callback = function () use ($candidates) {
             $file = fopen('php://output', 'w');
             fputcsv($file, ['Rank', 'Name', 'Email', 'Skills', 'Total Score']);
 
@@ -123,10 +117,6 @@ class ResumeController extends Controller
         return view('admin.resume.show', compact('resume'));
     }
 
-    /**
-     * Download the resume PDF.
-     */
-   
     /**
      * Remove the specified resume from storage.
      */
